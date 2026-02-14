@@ -1,3 +1,136 @@
+Here is a professional, comprehensive project description formatted for your GitHub repository. You can copy the content below directly into your `README.md` file.
+
+---
+
+# 🐣 Incubator Pro V3.2 - Smart ESP32 Controller
+
+**Incubator Pro V3.2** is a professional-grade, open-source firmware for building a high-precision egg incubator. Built on [ESPHome](https://esphome.io) and running on an ESP32, it transforms a standard insulated box into a "medical-grade" autonomous climate controller.
+
+Unlike simple thermostats that just turn a heater on and off, this system uses advanced **PID algorithms**, **biological simulation**, and **tri-sensor monitoring** to maximize hatch rates.
+
+## 🌟 Key Features
+
+### 1. Precision Climate Control
+
+* **PID Heating Engine:** Uses a Proportional-Integral-Derivative algorithm to control a Solid State Relay (SSR). This eliminates temperature swings, keeping the environment stable within **±0.1°C**.
+* **Smart Humidity:** Bang-bang control logic for a humidifier with configurable hysteresis.
+
+### 2. Tri-Sensor Monitoring Architecture
+
+* **Internal Air (SHT30):** Ultra-fast I2C sensor used for the PID loop to react instantly to changes.
+* **Egg Core (DS18B20):** Waterproof probe designed to be placed inside a "dummy egg" (water/gel). This tracks the *actual* thermal mass of the eggs, which is different from the air temperature.
+* **Room Ambient (DHT22):** Monitors external room conditions to anticipate thermal loss and calculate efficiency.
+
+### 3. Biological Simulation (Biomimicry)
+
+* **Daily Cool Down:** Simulates the mother bird leaving the nest. Automatically lowers the target temp and runs the ventilation fan for 30 minutes daily at noon.
+* **Auto-Lockdown:** Tracks the "Incubation Day." Automatically disables the cooling cycle on Day 19+ to protect the eggs during the hatching phase.
+* **CO₂ Flushing:** Configurable "Fresh Air" timer that runs the fan for brief bursts (e.g., 30 seconds every hour) to prevent embryo suffocation in late stages.
+
+### 4. Advanced User Interface
+
+* **2.4" IPS Display:** Custom-designed UI with 10 navigable pages (Live Dashboard, Graphs, Detailed Stats, Settings).
+* **Rotary Encoder:** Intuitive "Rotate & Click" input with visual cues (Yellow focus box, blinking arrows) for editing values.
+* **Bi-Directional Sync:** Change the "Day" or "Target Temp" on the screen, and it updates in Home Assistant instantly (and vice-versa).
+
+### 5. Robust Safety Systems
+
+* **Sensor Guard:** If the main sensor fails or gets unplugged (reads `NaN`), the heater is forcibly disabled immediately.
+* **Emergency Cutoff:** A hard-coded software limit (default 40.0°C) cuts power to the heater to prevent cooking eggs, regardless of PID status.
+* **Local-First Design:** The system is fully autonomous. If WiFi fails, temperature control, safety logic, and the screen continue to work perfectly.
+
+---
+
+## 🛠 Hardware Specifications
+
+| Component | Model / Type | Interface | Function |
+| --- | --- | --- | --- |
+| **MCU** | ESP32 DevKit V1 | - | The brain of the operation. |
+| **Display** | 2.4" TFT LCD (240x320) | SPI (ST7789V) | Main visual interface. |
+| **Air Sensor** | SHT30 | I2C (0x44) | Primary PID input (Fast response). |
+| **Egg Probe** | DS18B20 Waterproof | 1-Wire | Verification & Calibration. |
+| **Room Sensor** | DHT22 | GPIO | Ambient monitoring. |
+| **Heater** | Solid State Relay (SSR) | Slow PWM | Controls heating element. |
+| **Humidifier** | 5V Relay Module | GPIO | Controls 5V/220V humidifier. |
+| **Fan** | 5V Relay or MOSFET | GPIO | Fresh air exchange & cooling. |
+| **Input** | Rotary Encoder (EC11) | GPIO | Navigation & Adjustment. |
+
+---
+
+## 🔌 Pinout & Wiring Configuration
+
+### Actuators
+
+* **Heater (SSR):** `GPIO 13` (Slow PWM, 2s period)
+* **Ventilation Fan:** `GPIO 17`
+* **Humidifier:** `GPIO 5` *(Note: This is a strapping pin; ensure relay is not active during boot)*
+
+### Sensors
+
+* **SHT30 (Internal):** `SDA: GPIO 21`, `SCL: GPIO 22`
+* **DS18B20 (Egg Probe):** `GPIO 15` *(Requires 4.7kΩ pull-up resistor)*
+* **DHT22 (Room):** `GPIO 19`
+
+### Display (ST7789V SPI)
+
+* **MOSI (SDA):** `GPIO 23`
+* **CLK (SCL):** `GPIO 18`
+* **CS:** `GPIO 27`
+* **DC:** `GPIO 14`
+* **RST:** `GPIO 4`
+
+### Controls
+
+* **Encoder A (CLK):** `GPIO 32`
+* **Encoder B (DT):** `GPIO 33`
+* **Encoder Button:** `GPIO 25`
+* **Page Button:** `GPIO 26`
+
+---
+
+## 🖥 Menu Structure
+
+The system features a paged interface controlled by the **Page Button (GPIO 26)** and **Rotary Encoder**.
+
+1. **Dashboard:** Live Temp/Hum, Visual Target Bars, Current Status (Incubating/Cooling).
+2. **Detailed Stats:** Egg Probe Temp, Min/Max recordings, Temperature Deviation.
+3. **Room Env:** External room temperature and humidity data.
+4. **Device Status:** Live state (ON/OFF) of Heater, Humidifier, and Fan relays + Runtime counters.
+5. **Set Temperature:** Adjust target PID temperature (30°C - 40°C).
+6. **Set Humidity:** Adjust target humidity (30% - 80%).
+7. **Safety Settings:** Configure Max Temp Cutoff and Cool Down Target.
+8. **Ventilation:** Configure periodic fan intervals (Interval & Duration) for CO2 flushing.
+9. **Incubation Day:** View or modify the current day count. (Syncs with Home Assistant).
+10. **System Info:** WiFi Signal, IP Address, Sensor Health Check, Uptime.
+
+---
+
+## 📦 Installation
+
+1. **Hardware:** Assemble the components according to the wiring diagram above.
+2. **Software:**
+* Install [ESPHome](https://esphome.io).
+* Clone this repository.
+* Create a `secrets.yaml` file with your WiFi credentials.
+* Flash the `incubator.yaml` to your ESP32.
+
+
+3. **Home Assistant:** The device will be auto-discovered. Add it to gain full remote control and historical graphing.
+
+---
+
+## ⚠️ Safety Warning
+
+* **High Voltage:** This project often controls 110V/220V heating elements. Ensure all high-voltage wiring is properly insulated and enclosed.
+* **Redundancy:** Software is not infallible. **Always** install a physical thermal fuse (e.g., 70°C) in series with your heater to prevent fire in the event of a solid-state relay failure.
+
+---
+
+**Developed by:** [Your Name/Username]
+**License:** Open Source (MIT)
+
+
+
 # encubator3
 Here is the updated **Incubator Pro V3.2 Datasheet**. This version includes all the recent hardware additions (Egg Probe), software features (Periodic Ventilation), and UI changes.
 
