@@ -1,0 +1,1111 @@
+esphome:
+  name: incubator-pro-v3
+  friendly_name: Incubator Pro V3
+  on_boot:
+    priority: 200
+    then:
+      - lambda: |-
+          id(boot_time) = millis();
+          id(min_temp_recorded) = 99.0;
+          id(max_temp_recorded) = 0.0;
+          id(min_hum_recorded) = 99.0;
+          id(max_hum_recorded) = 0.0;
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Logging: WARN level to reduce CPU load
+logger:
+  level: WARN
+  logs:
+    sensor: WARN
+    component: ERROR
+    switch: WARN
+    wifi: WARN
+    api: WARN
+    rotary_encoder: ERROR
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+web_server:
+  port: 80
+
+captive_portal:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Incubator Fallback"
+    password: !secret ap_password
+
+# ======================
+# GLOBAL VARIABLES
+# ======================
+globals:
+  - id: menu_mode
+    type: int
+    initial_value: '0'
+    # 0=Home, 1=Stats, 2=Ext, 3=Status, 4=SetTemp, 5=SetHum, 6=Safety, 7=Vent, 8=Info
+
+  - id: total_menu_pages
+    type: int
+    initial_value: '9'
+
+  - id: is_cooling_down
+    type: bool
+    initial_value: 'false'
+
+  # --- Ventilation Globals ---
+  - id: vent_periodic_active
+    type: bool
+    initial_value: 'false'
+  
+  - id: vent_timer_sec
+    type: int
+    initial_value: '0'
+
+  - id: vent_edit_field
+    type: int
+    initial_value: '0' 
+    # 0 = Interval, 1 = Duration
+
+  - id: boot_time
+    type: unsigned long
+    initial_value: '0'
+
+  - id: min_temp_recorded
+    type: float
+    initial_value: '99.0'
+
+  - id: max_temp_recorded
+    type: float
+    initial_value: '0.0'
+
+  - id: min_hum_recorded
+    type: float
+    initial_value: '99.0'
+
+  - id: max_hum_recorded
+    type: float
+    initial_value: '0.0'
+
+  - id: heater_on_seconds
+    type: unsigned long
+    initial_value: '0'
+
+  - id: humidifier_on_seconds
+    type: unsigned long
+    initial_value: '0'
+
+  - id: fan_on_seconds
+    type: unsigned long
+    initial_value: '0'
+
+  - id: display_page_timer
+    type: int
+    initial_value: '0'
+
+  - id: edit_mode
+    type: bool
+    initial_value: 'false'
+
+  - id: safety_edit_field
+    type: int
+    initial_value: '0'
+
+  - id: display_dirty
+    type: bool
+    initial_value: 'true'
+
+# ======================
+# HARDWARE SETTINGS
+# ======================
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+# OneWire Bus for DS18B20
+one_wire:
+  - platform: gpio
+    pin: GPIO15
+    id: onewire_bus
+
+font:
+  - file: "gfonts://Open Sans"
+    id: font_title
+    size: 22
+  - file: "gfonts://Open Sans"
+    id: font_main
+    size: 26
+  - file: "gfonts://Open Sans"
+    id: font_xl
+    size: 44
+  - file: "gfonts://Open Sans"
+    id: font_small
+    size: 16
+  - file: "gfonts://Open Sans"
+    id: font_tiny
+    size: 13
+  - file: "gfonts://Open Sans"
+    id: font_icon
+    size: 30
+
+# ======================
+# DISPLAY LOGIC
+# ======================
+display:
+  - platform: st7789v
+    id: my_display
+    model: CUSTOM
+    height: 320
+    width: 240
+    offset_height: 0
+    offset_width: 0
+    cs_pin: GPIO27
+    dc_pin: GPIO14
+    reset_pin: GPIO4
+    rotation: 90
+    eightbitcolor: true
+    update_interval: never
+    lambda: |-
+      // ===== COLOR PALETTE =====
+      auto BLACK      = Color(0, 0, 0);
+      auto WHITE      = Color(255, 255, 255);
+      auto SOFT_WHITE = Color(200, 200, 210);
+      auto BLUE       = Color(30, 100, 255);
+      auto LIGHT_BLUE = Color(100, 160, 255);
+      auto DARK_BLUE  = Color(15, 25, 80);
+      auto SKY_BLUE   = Color(60, 140, 220);
+      auto RED        = Color(255, 50, 50);
+      auto DARK_RED   = Color(120, 20, 20);
+      auto WARM_RED   = Color(200, 60, 40);
+      auto GREEN      = Color(50, 220, 80);
+      auto DARK_GREEN = Color(0, 80, 0);
+      auto LIME       = Color(120, 255, 50);
+      auto YELLOW     = Color(255, 230, 0);
+      auto ORANGE     = Color(255, 160, 20);
+      auto AMBER      = Color(255, 190, 50);
+      auto CYAN       = Color(0, 220, 220);
+      auto MAGENTA    = Color(200, 50, 200);
+      auto GREY       = Color(100, 100, 110);
+      auto DARK_GREY  = Color(40, 40, 50);
+      auto PANEL_BG   = Color(20, 22, 35);
+      auto PANEL_BORDER = Color(50, 55, 80);
+      auto ACCENT     = Color(0, 180, 255);
+      auto TEAL       = Color(0, 180, 170);
+
+      // ===== HELPER: Uptime String =====
+      unsigned long uptime_sec = (millis() - id(boot_time)) / 1000;
+      int up_days  = uptime_sec / 86400;
+      int up_hours = (uptime_sec % 86400) / 3600;
+      int up_mins  = (uptime_sec % 3600) / 60;
+
+      // ===== HELPER: Blink flag (toggles every 500ms) =====
+      bool blink = (millis() / 500) % 2 == 0;
+
+      // ===== HELPER: Temp/Hum status colors =====
+      float cur_temp = id(temp_c).has_state() ? id(temp_c).state : 0;
+      float cur_hum  = id(hum_pct).has_state() ? id(hum_pct).state : 0;
+      float tgt_temp = id(set_temp).state;
+      float tgt_hum  = id(set_hum).state;
+
+      bool temp_ok = (cur_temp >= tgt_temp - 0.5 && cur_temp <= tgt_temp + 0.5);
+      bool hum_ok  = (cur_hum >= tgt_hum - 5 && cur_hum <= tgt_hum + 5);
+      bool temp_high = cur_temp > tgt_temp + 0.5;
+      bool hum_high  = cur_hum > tgt_hum + 5;
+
+      auto temp_color = temp_ok ? GREEN : (temp_high ? RED : ORANGE);
+      auto hum_color  = hum_ok ? GREEN : (hum_high ? BLUE : ORANGE);
+
+      // ===== BACKGROUND =====
+      it.fill(PANEL_BG);
+
+      // ===== DRAW STATUS BAR (Top - always visible) =====
+      it.filled_rectangle(0, 0, 320, 22, DARK_GREY);
+      if (id(wifi_signal_pct).has_state() && id(wifi_signal_pct).state > 0) {
+        it.printf(4, 11, id(font_tiny), GREEN, TextAlign::CENTER_LEFT, "WiFi %0.f%%", id(wifi_signal_pct).state);
+      } else {
+        it.print(4, 11, id(font_tiny), RED, TextAlign::CENTER_LEFT, "WiFi --");
+      }
+      for (int i = 0; i < id(total_menu_pages); i++) {
+        int dot_x = 130 + i * 10;
+        if (i == id(menu_mode)) {
+          it.filled_circle(dot_x, 11, 3, ACCENT);
+        } else {
+          it.filled_circle(dot_x, 11, 2, GREY);
+        }
+      }
+      if (up_days > 0) {
+        it.printf(316, 11, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT, "%dd %02dh", up_days, up_hours);
+      } else {
+        it.printf(316, 11, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT, "%02dh %02dm", up_hours, up_mins);
+      }
+
+      // ===== DRAW FOOTER (Bottom - always visible) =====
+      it.filled_rectangle(0, 222, 320, 18, DARK_GREY);
+      auto heater_c = id(heater_pid).action == climate::CLIMATE_ACTION_HEATING ? RED : GREY;
+      auto humid_c  = id(humidifier_relay).state ? BLUE : GREY;
+      auto fan_c    = id(vent_fan).state ? GREEN : GREY;
+      
+      it.filled_circle(40, 231, 5, heater_c);
+      it.print(50, 231, id(font_tiny), heater_c, TextAlign::CENTER_LEFT, "HTR");
+      it.filled_circle(120, 231, 5, humid_c);
+      it.print(130, 231, id(font_tiny), humid_c, TextAlign::CENTER_LEFT, "HUM");
+      it.filled_circle(200, 231, 5, fan_c);
+      it.print(210, 231, id(font_tiny), fan_c, TextAlign::CENTER_LEFT, "FAN");
+      if (id(is_cooling_down)) {
+        it.print(300, 231, id(font_tiny), CYAN, TextAlign::CENTER_RIGHT, "COOL");
+      } else if (id(vent_periodic_active)) {
+        it.print(300, 231, id(font_tiny), GREEN, TextAlign::CENTER_RIGHT, "FRESH AIR");
+      }
+
+      // =====================================================
+      // PAGE 0: MAIN DASHBOARD
+      // =====================================================
+      if (id(menu_mode) == 0) {
+        if (id(is_cooling_down)) {
+          it.filled_rectangle(0, 24, 320, 28, Color(10, 50, 100));
+          if (blink) it.print(160, 38, id(font_title), CYAN, TextAlign::CENTER, "COOLING DOWN");
+          else       it.print(160, 38, id(font_title), LIGHT_BLUE, TextAlign::CENTER, "COOLING DOWN");
+        } else {
+          it.filled_rectangle(0, 24, 320, 28, Color(10, 60, 30));
+          it.print(160, 38, id(font_title), GREEN, TextAlign::CENTER, "INCUBATOR ACTIVE");
+        }
+
+        it.rectangle(8, 58, 148, 100, PANEL_BORDER);
+        it.filled_rectangle(9, 59, 146, 20, Color(60, 20, 20));
+        it.print(82, 69, id(font_tiny), WARM_RED, TextAlign::CENTER, "TEMPERATURE");
+
+        if (id(temp_c).has_state()) {
+          it.printf(82, 102, id(font_xl), temp_color, TextAlign::CENTER, "%.1f", cur_temp);
+        } else {
+          it.print(82, 102, id(font_xl), GREY, TextAlign::CENTER, "--.-");
+        }
+        it.print(82, 130, id(font_tiny), GREY, TextAlign::CENTER, "\xc2\xb0""C");
+
+        float temp_pct = (cur_temp - 30.0) / (42.0 - 30.0);
+        if (temp_pct < 0) temp_pct = 0; if (temp_pct > 1) temp_pct = 1;
+        it.rectangle(14, 142, 132, 8, GREY);
+        it.filled_rectangle(15, 143, (int)(130 * temp_pct), 6, temp_color);
+
+        it.rectangle(164, 58, 148, 100, PANEL_BORDER);
+        it.filled_rectangle(165, 59, 146, 20, Color(15, 20, 60));
+        it.print(238, 69, id(font_tiny), LIGHT_BLUE, TextAlign::CENTER, "HUMIDITY");
+
+        if (id(hum_pct).has_state()) {
+          it.printf(238, 102, id(font_xl), hum_color, TextAlign::CENTER, "%.0f", cur_hum);
+        } else {
+          it.print(238, 102, id(font_xl), GREY, TextAlign::CENTER, "--");
+        }
+        it.print(238, 130, id(font_tiny), GREY, TextAlign::CENTER, "%RH");
+
+        float hum_pct_val = (cur_hum - 20.0) / (90.0 - 20.0);
+        if (hum_pct_val < 0) hum_pct_val = 0; if (hum_pct_val > 1) hum_pct_val = 1;
+        it.rectangle(170, 142, 132, 8, GREY);
+        it.filled_rectangle(171, 143, (int)(130 * hum_pct_val), 6, hum_color);
+
+        it.filled_rectangle(8, 164, 304, 24, DARK_GREY);
+        it.printf(160, 176, id(font_small), AMBER, TextAlign::CENTER, "Target: %.1f\xc2\xb0""C  |  %.0f%% RH", tgt_temp, tgt_hum);
+
+        auto overall = (temp_ok && hum_ok) ? GREEN : ORANGE;
+        auto overall_text = (temp_ok && hum_ok) ? "ALL OPTIMAL" : "ADJUSTING...";
+        it.filled_circle(24, 202, 6, overall);
+        it.printf(36, 202, id(font_small), overall, TextAlign::CENTER_LEFT, "%s", overall_text);
+
+        it.print(310, 202, id(font_tiny), GREY, TextAlign::CENTER_RIGHT, "[Knob] Menu");
+      }
+
+      // =====================================================
+      // PAGE 1: DETAILED STATS
+      // =====================================================
+      else if (id(menu_mode) == 1) {
+        it.filled_rectangle(0, 24, 320, 28, Color(40, 20, 60));
+        it.print(160, 38, id(font_title), MAGENTA, TextAlign::CENTER, "DETAILED STATS");
+
+        it.print(16, 62, id(font_small), WARM_RED, TextAlign::CENTER_LEFT, "Temperature");
+        it.filled_rectangle(8, 74, 304, 1, PANEL_BORDER);
+        it.printf(16, 88, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Current:  %.2f \xc2\xb0""C", cur_temp);
+        it.printf(16, 106, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Target:   %.1f \xc2\xb0""C", tgt_temp);
+        
+        if (id(egg_temp).has_state()) {
+           it.printf(16, 124, id(font_tiny), YELLOW, TextAlign::CENTER_LEFT, "Egg Probe: %.2f \xc2\xb0""C", id(egg_temp).state);
+        } else {
+           it.print(16, 124, id(font_tiny), GREY, TextAlign::CENTER_LEFT, "Egg Probe: --.-- \xc2\xb0""C");
+        }
+
+        float temp_dev = cur_temp - tgt_temp;
+        auto dev_col = (std::abs(temp_dev) < 0.3f) ? GREEN : ((temp_dev > 0) ? RED : ORANGE);
+        it.printf(300, 88, id(font_small), dev_col, TextAlign::CENTER_RIGHT, "%+.2f", temp_dev);
+
+        it.print(16, 148, id(font_small), LIGHT_BLUE, TextAlign::CENTER_LEFT, "Humidity");
+        it.filled_rectangle(8, 160, 304, 1, PANEL_BORDER);
+        it.printf(16, 174, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Current:  %.1f %%", cur_hum);
+        it.printf(16, 192, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Target:   %.0f %%", tgt_hum);
+        it.printf(16, 210, id(font_tiny), CYAN, TextAlign::CENTER_LEFT, "Min: %.0f  |  Max: %.0f", id(min_hum_recorded), id(max_hum_recorded));
+
+        float hum_dev = cur_hum - tgt_hum;
+        auto hdev_col = (std::abs(hum_dev) < 3.0f) ? GREEN : ((hum_dev > 0) ? BLUE : ORANGE);
+        it.printf(300, 174, id(font_small), hdev_col, TextAlign::CENTER_RIGHT, "%+.1f", hum_dev);
+      }
+
+      // =====================================================
+      // PAGE 2: EXTERNAL SENSORS
+      // =====================================================
+      else if (id(menu_mode) == 2) {
+        it.filled_rectangle(0, 24, 320, 28, Color(0, 50, 50));
+        it.print(160, 38, id(font_title), TEAL, TextAlign::CENTER, "ROOM ENVIRONMENT");
+
+        it.rectangle(16, 60, 288, 60, PANEL_BORDER);
+        it.filled_rectangle(17, 61, 286, 18, Color(40, 25, 15));
+        it.print(160, 70, id(font_tiny), ORANGE, TextAlign::CENTER, "ROOM TEMPERATURE");
+        if (id(ext_temp).has_state()) {
+          it.printf(160, 100, id(font_main), WHITE, TextAlign::CENTER, "%.1f \xc2\xb0""C", id(ext_temp).state);
+        } else {
+          it.print(160, 100, id(font_main), GREY, TextAlign::CENTER, "-- \xc2\xb0""C");
+        }
+
+        it.rectangle(16, 128, 288, 60, PANEL_BORDER);
+        it.filled_rectangle(17, 129, 286, 18, Color(15, 25, 45));
+        it.print(160, 138, id(font_tiny), LIGHT_BLUE, TextAlign::CENTER, "ROOM HUMIDITY");
+        if (id(ext_hum).has_state()) {
+          it.printf(160, 168, id(font_main), WHITE, TextAlign::CENTER, "%.0f %%RH", id(ext_hum).state);
+        } else {
+          it.print(160, 168, id(font_main), GREY, TextAlign::CENTER, "-- %%RH");
+        }
+
+        it.filled_rectangle(8, 196, 304, 22, DARK_GREY);
+        if (id(ext_temp).has_state() && id(temp_c).has_state()) {
+          float dt = cur_temp - id(ext_temp).state;
+          float dh = cur_hum - id(ext_hum).state;
+          it.printf(160, 207, id(font_tiny), AMBER, TextAlign::CENTER, "Delta: %+.1f\xc2\xb0""C  |  %+.0f%% RH vs Room", dt, dh);
+        } else {
+          it.print(160, 207, id(font_tiny), GREY, TextAlign::CENTER, "Waiting for sensor data...");
+        }
+      }
+
+      // =====================================================
+      // PAGE 3: RELAY / DEVICE STATUS
+      // =====================================================
+      else if (id(menu_mode) == 3) {
+        it.filled_rectangle(0, 24, 320, 28, Color(50, 40, 10));
+        it.print(160, 38, id(font_title), AMBER, TextAlign::CENTER, "DEVICE STATUS");
+
+        it.rectangle(12, 58, 296, 44, PANEL_BORDER);
+        bool is_heating = (id(heater_pid).action == climate::CLIMATE_ACTION_HEATING);
+        it.filled_circle(32, 80, 10, is_heating ? RED : DARK_GREY);
+        it.print(50, 72, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Heater");
+        it.print(50, 90, id(font_tiny), GREY, TextAlign::CENTER_LEFT, is_heating ? "RUNNING" : "Standby");
+        unsigned long h_hrs = id(heater_on_seconds) / 3600;
+        unsigned long h_min = (id(heater_on_seconds) % 3600) / 60;
+        it.printf(296, 80, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT, "%luh %lum", h_hrs, h_min);
+
+        it.rectangle(12, 108, 296, 44, PANEL_BORDER);
+        it.filled_circle(32, 130, 10, id(humidifier_relay).state ? BLUE : DARK_GREY);
+        it.print(50, 122, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Humidifier");
+        it.print(50, 140, id(font_tiny), GREY, TextAlign::CENTER_LEFT, id(humidifier_relay).state ? "RUNNING" : "Standby");
+        unsigned long hu_hrs = id(humidifier_on_seconds) / 3600;
+        unsigned long hu_min = (id(humidifier_on_seconds) % 3600) / 60;
+        it.printf(296, 130, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT, "%luh %lum", hu_hrs, hu_min);
+
+        it.rectangle(12, 158, 296, 44, PANEL_BORDER);
+        it.filled_circle(32, 180, 10, id(vent_fan).state ? GREEN : DARK_GREY);
+        it.print(50, 172, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Vent Fan");
+        it.print(50, 190, id(font_tiny), GREY, TextAlign::CENTER_LEFT, id(vent_fan).state ? "RUNNING" : "Standby");
+        unsigned long f_hrs = id(fan_on_seconds) / 3600;
+        unsigned long f_min = (id(fan_on_seconds) % 3600) / 60;
+        it.printf(296, 180, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT, "%luh %lum", f_hrs, f_min);
+
+        if (id(is_cooling_down)) {
+          it.filled_rectangle(80, 206, 160, 16, Color(10, 50, 80));
+          it.print(160, 214, id(font_tiny), CYAN, TextAlign::CENTER, "COOLING SCHEDULE ACTIVE");
+        } else if (id(vent_periodic_active)) {
+          it.filled_rectangle(80, 206, 160, 16, Color(10, 80, 20));
+          it.print(160, 214, id(font_tiny), LIME, TextAlign::CENTER, "FRESH AIR FLUSH ACTIVE");
+        }
+      }
+
+      // =====================================================
+      // PAGE 4: SET TEMPERATURE
+      // =====================================================
+      else if (id(menu_mode) == 4) {
+        it.filled_rectangle(0, 24, 320, 198, Color(60, 5, 5));
+        it.print(160, 50, id(font_title), WHITE, TextAlign::CENTER, "SET TEMPERATURE");
+        it.filled_rectangle(60, 64, 200, 2, WARM_RED);
+
+        if (id(edit_mode)) {
+          it.rectangle(45, 90, 230, 60, YELLOW);
+          if (blink) {
+            it.print(160, 80, id(font_tiny), YELLOW, TextAlign::CENTER, "--- EDITING ---");
+            it.print(30, 120, id(font_xl), YELLOW, TextAlign::CENTER, "<");
+            it.print(290, 120, id(font_xl), YELLOW, TextAlign::CENTER, ">");
+          }
+          it.printf(160, 120, id(font_xl), YELLOW, TextAlign::CENTER, "%.1f", tgt_temp);
+        } else {
+          it.printf(160, 120, id(font_xl), WHITE, TextAlign::CENTER, "%.1f", tgt_temp);
+        }
+
+        it.print(160, 150, id(font_small), GREY, TextAlign::CENTER, "\xc2\xb0""C");
+        it.printf(160, 176, id(font_tiny), SOFT_WHITE, TextAlign::CENTER, "Range: 30.0 - 40.0 \xc2\xb0""C");
+
+        it.filled_rectangle(40, 190, 240, 22, DARK_GREY);
+        it.printf(160, 201, id(font_tiny), temp_color, TextAlign::CENTER, "Current: %.1f \xc2\xb0""C  (%+.1f)", cur_temp, cur_temp - tgt_temp);
+        
+        if (id(edit_mode)) {
+           it.print(160, 216, id(font_tiny), YELLOW, TextAlign::CENTER, "Rotate to Change  |  Press to Save");
+        } else {
+           it.print(160, 216, id(font_tiny), AMBER, TextAlign::CENTER, "Press Knob to Edit");
+        }
+      }
+
+      // =====================================================
+      // PAGE 5: SET HUMIDITY
+      // =====================================================
+      else if (id(menu_mode) == 5) {
+        it.filled_rectangle(0, 24, 320, 198, Color(5, 5, 60));
+        it.print(160, 50, id(font_title), WHITE, TextAlign::CENTER, "SET HUMIDITY");
+        it.filled_rectangle(60, 64, 200, 2, LIGHT_BLUE);
+
+        if (id(edit_mode)) {
+          it.rectangle(45, 90, 230, 60, YELLOW);
+          if (blink) {
+             it.print(160, 80, id(font_tiny), YELLOW, TextAlign::CENTER, "--- EDITING ---");
+             it.print(30, 120, id(font_xl), YELLOW, TextAlign::CENTER, "<");
+             it.print(290, 120, id(font_xl), YELLOW, TextAlign::CENTER, ">");
+          }
+          it.printf(160, 120, id(font_xl), YELLOW, TextAlign::CENTER, "%.0f", tgt_hum);
+        } else {
+          it.printf(160, 120, id(font_xl), WHITE, TextAlign::CENTER, "%.0f", tgt_hum);
+        }
+
+        it.print(160, 150, id(font_small), GREY, TextAlign::CENTER, "%% RH");
+        it.printf(160, 176, id(font_tiny), SOFT_WHITE, TextAlign::CENTER, "Range: 30 - 80 %%");
+
+        it.filled_rectangle(40, 190, 240, 22, DARK_GREY);
+        it.printf(160, 201, id(font_tiny), hum_color, TextAlign::CENTER, "Current: %.0f %%  (%+.0f)", cur_hum, cur_hum - tgt_hum);
+
+        if (id(edit_mode)) {
+           it.print(160, 216, id(font_tiny), YELLOW, TextAlign::CENTER, "Rotate to Change  |  Press to Save");
+        } else {
+           it.print(160, 216, id(font_tiny), AMBER, TextAlign::CENTER, "Press Knob to Edit");
+        }
+      }
+
+      // =====================================================
+      // PAGE 6: SAFETY SETTINGS
+      // =====================================================
+      else if (id(menu_mode) == 6) {
+        it.filled_rectangle(0, 24, 320, 28, Color(70, 20, 10));
+        it.print(160, 38, id(font_title), RED, TextAlign::CENTER, "SAFETY SETTINGS");
+
+        // Max temp field
+        bool sel0 = (id(safety_edit_field) == 0);
+        auto box0 = sel0 ? WARM_RED : PANEL_BORDER;
+        it.rectangle(12, 60, 296, 56, box0);
+        it.print(24, 74, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Safety Cutoff Temp");
+        if (sel0 && blink && id(edit_mode)) {
+          it.printf(284, 74, id(font_main), YELLOW, TextAlign::CENTER_RIGHT, "%.1f\xc2\xb0""C", id(max_temp).state);
+        } else {
+          it.printf(284, 74, id(font_main), RED, TextAlign::CENTER_RIGHT, "%.1f\xc2\xb0""C", id(max_temp).state);
+        }
+        it.printf(24, 100, id(font_tiny), GREY, TextAlign::CENTER_LEFT, "Heater OFF above this temp");
+
+        // Cool down target
+        bool sel1 = (id(safety_edit_field) == 1);
+        auto box1 = sel1 ? SKY_BLUE : PANEL_BORDER;
+        it.rectangle(12, 124, 296, 56, box1);
+        it.print(24, 138, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Cool-Down Target");
+        if (sel1 && blink && id(edit_mode)) {
+          it.printf(284, 138, id(font_main), YELLOW, TextAlign::CENTER_RIGHT, "%.1f\xc2\xb0""C", id(cool_down_target).state);
+        } else {
+          it.printf(284, 138, id(font_main), CYAN, TextAlign::CENTER_RIGHT, "%.1f\xc2\xb0""C", id(cool_down_target).state);
+        }
+        it.printf(24, 164, id(font_tiny), GREY, TextAlign::CENTER_LEFT, "Target during daily cool-down");
+
+        it.filled_rectangle(12, 192, 296, 24, DARK_GREY);
+        if (id(edit_mode)) {
+          it.print(160, 204, id(font_tiny), YELLOW, TextAlign::CENTER, "Rotate: Adjust  |  Press: Next Field");
+        } else {
+          it.print(160, 204, id(font_tiny), AMBER, TextAlign::CENTER, "Press Knob to Edit  |  Back to Cancel");
+        }
+      }
+
+      // =====================================================
+      // PAGE 7: VENTILATION SETTINGS (NEW)
+      // =====================================================
+      else if (id(menu_mode) == 7) {
+        it.filled_rectangle(0, 24, 320, 28, Color(10, 50, 80));
+        it.print(160, 38, id(font_title), CYAN, TextAlign::CENTER, "VENTILATION");
+
+        // Interval Field
+        bool sel0 = (id(vent_edit_field) == 0);
+        auto box0 = sel0 ? CYAN : PANEL_BORDER;
+        it.rectangle(12, 60, 296, 56, box0);
+        it.print(24, 74, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Vent Interval");
+        if (sel0 && blink && id(edit_mode)) {
+          it.printf(284, 74, id(font_main), YELLOW, TextAlign::CENTER_RIGHT, "%.0f min", id(vent_interval).state);
+        } else {
+          it.printf(284, 74, id(font_main), CYAN, TextAlign::CENTER_RIGHT, "%.0f min", id(vent_interval).state);
+        }
+        it.printf(24, 100, id(font_tiny), GREY, TextAlign::CENTER_LEFT, "Run fan every X mins (0=OFF)");
+
+        // Duration Field
+        bool sel1 = (id(vent_edit_field) == 1);
+        auto box1 = sel1 ? LIGHT_BLUE : PANEL_BORDER;
+        it.rectangle(12, 124, 296, 56, box1);
+        it.print(24, 138, id(font_small), WHITE, TextAlign::CENTER_LEFT, "Vent Duration");
+        if (sel1 && blink && id(edit_mode)) {
+          it.printf(284, 138, id(font_main), YELLOW, TextAlign::CENTER_RIGHT, "%.0f sec", id(vent_duration).state);
+        } else {
+          it.printf(284, 138, id(font_main), BLUE, TextAlign::CENTER_RIGHT, "%.0f sec", id(vent_duration).state);
+        }
+        it.printf(24, 164, id(font_tiny), GREY, TextAlign::CENTER_LEFT, "Run fan for X seconds");
+
+        // Next Run Countdown
+        it.filled_rectangle(8, 185, 304, 1, DARK_GREY);
+        int time_left = (int(id(vent_interval).state) * 60) - id(vent_timer_sec);
+        if (time_left < 0) time_left = 0;
+        if (id(vent_interval).state > 0) {
+           it.printf(160, 200, id(font_tiny), SOFT_WHITE, TextAlign::CENTER, "Next Vent in: %d min %d sec", time_left / 60, time_left % 60);
+        } else {
+           it.print(160, 200, id(font_tiny), GREY, TextAlign::CENTER, "Periodic Ventilation Disabled");
+        }
+
+        if (id(edit_mode)) {
+          it.print(160, 216, id(font_tiny), YELLOW, TextAlign::CENTER, "Rotate: Adjust  |  Press: Next Field");
+        } else {
+          it.print(160, 216, id(font_tiny), AMBER, TextAlign::CENTER, "Press Knob to Edit  |  Back to Cancel");
+        }
+      }
+
+      // =====================================================
+      // PAGE 8: SYSTEM INFO (MOVED)
+      // =====================================================
+      else if (id(menu_mode) == 8) {
+        it.filled_rectangle(0, 24, 320, 28, Color(25, 30, 55));
+        it.print(160, 38, id(font_title), ACCENT, TextAlign::CENTER, "SYSTEM INFO");
+
+        int row_y = 60;
+        int row_h = 20;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "WiFi:");
+        if (id(wifi_signal_pct).has_state() && id(wifi_signal_pct).state > 0) {
+          auto wifi_col = (id(wifi_signal_pct).state > 60) ? GREEN : ((id(wifi_signal_pct).state > 30) ? YELLOW : RED);
+          it.printf(300, row_y, id(font_small), wifi_col, TextAlign::CENTER_RIGHT, "%.0f%% (%.0f dBm)", id(wifi_signal_pct).state, id(wifi_signal_db).state);
+        } else {
+          it.print(300, row_y, id(font_small), RED, TextAlign::CENTER_RIGHT, "Disconnected");
+        }
+        row_y += row_h;
+        it.filled_rectangle(8, row_y, 304, 1, PANEL_BORDER);
+        row_y += 4;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "IP:");
+        if (wifi::global_wifi_component->is_connected()) {
+          auto ips = wifi::global_wifi_component->get_ip_addresses();
+          if (!ips.empty()) {
+            it.printf(300, row_y, id(font_small), WHITE, TextAlign::CENTER_RIGHT, "%s", ips[0].str().c_str());
+          } else {
+            it.print(300, row_y, id(font_small), RED, TextAlign::CENTER_RIGHT, "No IP");
+          }
+        } else {
+          it.print(300, row_y, id(font_small), RED, TextAlign::CENTER_RIGHT, "Not Connected");
+        }
+        row_y += row_h;
+        it.filled_rectangle(8, row_y, 304, 1, PANEL_BORDER);
+        row_y += 4;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Uptime:");
+        it.printf(300, row_y, id(font_small), GREEN, TextAlign::CENTER_RIGHT, "%dd %02dh %02dm", up_days, up_hours, up_mins);
+        row_y += row_h;
+        it.filled_rectangle(8, row_y, 304, 1, PANEL_BORDER);
+        row_y += 4;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Free RAM:");
+        it.printf(300, row_y, id(font_small), WHITE, TextAlign::CENTER_RIGHT, "%u bytes", ESP.getFreeHeap());
+        row_y += row_h;
+        it.filled_rectangle(8, row_y, 304, 1, PANEL_BORDER);
+        row_y += 4;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "SHT30:");
+        it.print(140, row_y, id(font_small), id(temp_c).has_state() ? GREEN : RED, TextAlign::CENTER_LEFT, id(temp_c).has_state() ? "OK" : "FAIL");
+        it.print(180, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "DHT22:");
+        it.print(300, row_y, id(font_small), id(ext_temp).has_state() ? GREEN : RED, TextAlign::CENTER_RIGHT, id(ext_temp).has_state() ? "OK" : "FAIL");
+        row_y += row_h;
+        it.filled_rectangle(8, row_y, 304, 1, PANEL_BORDER);
+        row_y += 4;
+
+        it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Firmware:");
+        it.print(300, row_y, id(font_small), ACCENT, TextAlign::CENTER_RIGHT, "Pro V3.2");
+      }
+
+# ======================
+# INPUTS (Knob & Buttons)
+# ======================
+sensor:
+  - platform: rotary_encoder
+    id: encoder_value
+    name: "Control Knob"
+    internal: true
+    pin_a:
+      number: GPIO32
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO33
+      mode: INPUT_PULLUP
+    resolution: 1
+    on_clockwise:
+      - lambda: |-
+          id(display_page_timer) = 0;
+          if (id(edit_mode)) {
+            if (id(menu_mode) == 4) {
+               float v = id(set_temp).state + 0.1;
+               if (v > 40.0) v = 40.0;
+               id(set_temp).publish_state(v);
+            } else if (id(menu_mode) == 5) {
+               float v = id(set_hum).state + 1.0;
+               if (v > 80.0) v = 80.0;
+               id(set_hum).publish_state(v);
+            } else if (id(menu_mode) == 6) {
+               if (id(safety_edit_field) == 0) {
+                 float v = id(max_temp).state + 0.5;
+                 if (v > 45.0) v = 45.0;
+                 id(max_temp).publish_state(v);
+               } else {
+                 float v = id(cool_down_target).state + 0.5;
+                 if (v > 38.0) v = 38.0;
+                 id(cool_down_target).publish_state(v);
+               }
+            } else if (id(menu_mode) == 7) { // Vent Page
+               if (id(vent_edit_field) == 0) {
+                 float v = id(vent_interval).state + 10.0;
+                 if (v > 240.0) v = 240.0;
+                 id(vent_interval).publish_state(v);
+               } else {
+                 float v = id(vent_duration).state + 5.0;
+                 if (v > 120.0) v = 120.0;
+                 id(vent_duration).publish_state(v);
+               }
+            }
+          }
+          id(display_dirty) = true;
+    on_anticlockwise:
+      - lambda: |-
+          id(display_page_timer) = 0;
+          if (id(edit_mode)) {
+            if (id(menu_mode) == 4) {
+               float v = id(set_temp).state - 0.1;
+               if (v < 30.0) v = 30.0;
+               id(set_temp).publish_state(v);
+            } else if (id(menu_mode) == 5) {
+               float v = id(set_hum).state - 1.0;
+               if (v < 30.0) v = 30.0;
+               id(set_hum).publish_state(v);
+            } else if (id(menu_mode) == 6) {
+               if (id(safety_edit_field) == 0) {
+                 float v = id(max_temp).state - 0.5;
+                 if (v < 38.0) v = 38.0;
+                 id(max_temp).publish_state(v);
+               } else {
+                 float v = id(cool_down_target).state - 0.5;
+                 if (v < 20.0) v = 20.0;
+                 id(cool_down_target).publish_state(v);
+               }
+            } else if (id(menu_mode) == 7) { // Vent Page
+               if (id(vent_edit_field) == 0) {
+                 float v = id(vent_interval).state - 10.0;
+                 if (v < 0.0) v = 0.0;
+                 id(vent_interval).publish_state(v);
+               } else {
+                 float v = id(vent_duration).state - 5.0;
+                 if (v < 5.0) v = 5.0;
+                 id(vent_duration).publish_state(v);
+               }
+            }
+          }
+          id(display_dirty) = true;
+
+  # --- Real Sensors ---
+  - platform: sht3xd
+    address: 0x44
+    update_interval: 2s
+    temperature:
+      id: temp_c
+      name: "Internal Temp"
+      on_value:
+        then:
+          - lambda: |-
+              if (x < id(min_temp_recorded)) id(min_temp_recorded) = x;
+              if (x > id(max_temp_recorded)) id(max_temp_recorded) = x;
+    humidity:
+      id: hum_pct
+      name: "Internal Hum"
+      on_value:
+        then:
+          - lambda: |-
+              if (x < id(min_hum_recorded)) id(min_hum_recorded) = x;
+              if (x > id(max_hum_recorded)) id(max_hum_recorded) = x;
+
+  - platform: dht
+    pin: GPIO19
+    model: DHT22
+    update_interval: 10s
+    temperature: { id: ext_temp, name: "Room Temp" }
+    humidity: { id: ext_hum, name: "Room Hum" }
+
+  # --- NEW SENSOR: DS18B20 (Replaces 'dallas' platform with 'dallas_temp') ---
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    index: 0
+    name: "Egg Core Temp"
+    id: egg_temp
+
+  # --- WiFi Signal Sensors ---
+  - platform: wifi_signal
+    id: wifi_signal_db
+    name: "WiFi Signal dBm"
+    update_interval: 30s
+
+  - platform: copy
+    source_id: wifi_signal_db
+    id: wifi_signal_pct
+    name: "WiFi Signal %"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+
+binary_sensor:
+  - platform: gpio
+    id: knob_button
+    pin:
+      number: GPIO25
+      inverted: true
+      mode: INPUT_PULLUP
+    on_press:
+      - lambda: |-
+          id(display_page_timer) = 0;
+          if (id(menu_mode) == 4) {
+            if (id(edit_mode)) {
+              id(set_temp).make_call().set_value(id(set_temp).state).perform();
+            }
+            id(edit_mode) = !id(edit_mode);
+          } else if (id(menu_mode) == 5) {
+            if (id(edit_mode)) {
+              id(set_hum).make_call().set_value(id(set_hum).state).perform();
+            }
+            id(edit_mode) = !id(edit_mode);
+          } else if (id(menu_mode) == 6) {
+            if (!id(edit_mode)) {
+              id(edit_mode) = true;
+              id(safety_edit_field) = 0;
+            } else {
+              id(safety_edit_field) += 1;
+              if (id(safety_edit_field) > 1) {
+                id(max_temp).make_call().set_value(id(max_temp).state).perform();
+                id(cool_down_target).make_call().set_value(id(cool_down_target).state).perform();
+                id(safety_edit_field) = 0;
+                id(edit_mode) = false;
+              }
+            }
+          } else if (id(menu_mode) == 7) { // Vent Page
+            if (!id(edit_mode)) {
+              id(edit_mode) = true;
+              id(vent_edit_field) = 0;
+            } else {
+              id(vent_edit_field) += 1;
+              if (id(vent_edit_field) > 1) {
+                // Save values
+                id(vent_interval).make_call().set_value(id(vent_interval).state).perform();
+                id(vent_duration).make_call().set_value(id(vent_duration).state).perform();
+                id(vent_edit_field) = 0;
+                id(edit_mode) = false;
+              }
+            }
+          }
+          id(display_dirty) = true;
+
+  - platform: gpio
+    id: bottom_button
+    pin:
+      number: GPIO26
+      inverted: true
+      mode: INPUT_PULLUP
+    on_press:
+      - lambda: |-
+          id(display_page_timer) = 0;
+          if (id(edit_mode)) {
+            id(edit_mode) = false;
+            id(safety_edit_field) = 0;
+            id(vent_edit_field) = 0;
+            id(menu_mode) = 0;
+          } else {
+            id(menu_mode) += 1;
+            if (id(menu_mode) >= id(total_menu_pages)) id(menu_mode) = 0;
+          }
+          id(display_dirty) = true;
+
+# ======================
+# CONTROL LOGIC
+# ======================
+number:
+  - platform: template
+    id: set_temp
+    name: "Target Temp"
+    min_value: 30
+    max_value: 40
+    step: 0.1
+    initial_value: 37.5
+    optimistic: true
+    restore_value: yes
+
+  - platform: template
+    id: set_hum
+    name: "Target Hum"
+    min_value: 30
+    max_value: 80
+    step: 1
+    initial_value: 55
+    optimistic: true
+    restore_value: yes
+
+  - platform: template
+    id: cool_down_target
+    name: "Cool Down Target"
+    min_value: 20
+    max_value: 38
+    step: 0.5
+    initial_value: 32.0
+    optimistic: true
+    restore_value: yes
+
+  - platform: template
+    id: max_temp
+    name: "Safety Cutoff"
+    min_value: 38
+    max_value: 45
+    step: 0.5
+    initial_value: 40.0
+    optimistic: true
+    restore_value: yes
+
+  # --- NEW: Ventilation Numbers ---
+  - platform: template
+    id: vent_interval
+    name: "Vent Interval (Min)"
+    min_value: 0
+    max_value: 240
+    step: 10
+    initial_value: 60
+    optimistic: true
+    restore_value: yes
+
+  - platform: template
+    id: vent_duration
+    name: "Vent Duration (Sec)"
+    min_value: 5
+    max_value: 120
+    step: 5
+    initial_value: 15
+    optimistic: true
+    restore_value: yes
+
+# ======================
+# HEATER OUTPUT (Slow PWM for SSR)
+# ======================
+output:
+  - platform: slow_pwm
+    id: heater_pwm
+    pin: GPIO13
+    period: 2s
+
+# ======================
+# PID CLIMATE CONTROL
+# ======================
+climate:
+  - platform: pid
+    id: heater_pid
+    name: "Incubator Heater"
+    sensor: temp_c
+    default_target_temperature: 37.5°C
+    heat_output: heater_pwm
+    control_parameters:
+      kp: 0.6
+      ki: 0.005
+      kd: 0.0
+    visual:
+      min_temperature: 30
+      max_temperature: 45
+      temperature_step: 0.1
+
+# ======================
+# RELAYS
+# ======================
+switch:
+  - platform: gpio
+    id: humidifier_relay
+    name: "Humidifier"
+    pin: GPIO5
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    id: vent_fan
+    name: "Ventilation Fan"
+    pin: GPIO17
+    restore_mode: ALWAYS_OFF
+
+# ======================
+# AUTOMATION INTERVALS
+# ======================
+interval:
+  # Logic to count the Ventilation Timer (1s)
+  - interval: 1s
+    then:
+      - lambda: |-
+          // 1. Auto-return logic for menus
+          if (id(menu_mode) >= 4) {
+            id(display_page_timer) += 1;
+            if (id(display_page_timer) > 60) {
+              id(menu_mode) = 0;
+              id(edit_mode) = false;
+              id(display_page_timer) = 0;
+              id(display_dirty) = true;
+            }
+          } else {
+            id(display_page_timer) = 0;
+          }
+
+          // 2. Periodic Vent Logic
+          id(vent_timer_sec) += 1;
+          
+          if (id(vent_interval).state > 0 && !id(is_cooling_down)) {
+             int interval_sec = (int)id(vent_interval).state * 60;
+             int duration_sec = (int)id(vent_duration).state;
+
+             // Start
+             if (id(vent_timer_sec) >= interval_sec && !id(vent_periodic_active)) {
+               id(vent_periodic_active) = true;
+             }
+             // Stop
+             if (id(vent_periodic_active) && id(vent_timer_sec) >= (interval_sec + duration_sec)) {
+               id(vent_periodic_active) = false;
+               id(vent_timer_sec) = 0; // Reset
+             }
+          } else {
+             // If disabled or cooling down, hold timer at 0
+             id(vent_periodic_active) = false;
+             id(vent_timer_sec) = 0;
+          }
+
+  # Main Control Loop (2s)
+  - interval: 2s
+    then:
+      - lambda: |-
+          // SAFETY: If temp sensor fails, disable PID
+          if (isnan(id(temp_c).state)) {
+            id(heater_pwm).set_level(0);
+            auto off_call = id(heater_pid).make_call();
+            off_call.set_mode(climate::CLIMATE_MODE_OFF);
+            off_call.perform();
+            return;
+          }
+
+          // SAFETY: Emergency cutoff with 0.5°C hysteresis
+          static bool emergency_cutoff = false;
+          if (id(temp_c).state > id(max_temp).state) {
+            emergency_cutoff = true;
+          } else if (id(temp_c).state <= (id(max_temp).state - 0.5f)) {
+            emergency_cutoff = false;
+          }
+          if (emergency_cutoff) {
+            id(heater_pwm).set_level(0);
+            auto off_call = id(heater_pid).make_call();
+            off_call.set_mode(climate::CLIMATE_MODE_OFF);
+            off_call.perform();
+            return;
+          }
+
+          // PID TARGET: update setpoint based on normal or cooldown mode
+          float target = id(set_temp).state;
+          if (id(is_cooling_down)) target = id(cool_down_target).state;
+
+          // Only update PID if target changed or mode is off
+          auto current_mode = id(heater_pid).mode;
+          if (current_mode != climate::CLIMATE_MODE_HEAT ||
+              std::abs(id(heater_pid).target_temperature - target) > 0.05f) {
+            auto heat_call = id(heater_pid).make_call();
+            heat_call.set_mode(climate::CLIMATE_MODE_HEAT);
+            heat_call.set_target_temperature(target);
+            heat_call.perform();
+          }
+
+          // SAFETY: If humidity sensor fails, stop humidifier
+          if (isnan(id(hum_pct).state)) {
+            id(humidifier_relay).turn_off();
+          }
+
+          // HUMIDIFIER LOGIC (only when not cooling, and sensor valid)
+          if (!id(is_cooling_down) && !isnan(id(hum_pct).state)) {
+            if (id(hum_pct).state <= (id(set_hum).state - 3)) id(humidifier_relay).turn_on();
+            else if (id(hum_pct).state >= id(set_hum).state)  id(humidifier_relay).turn_off();
+          }
+
+          // FAN LOGIC: run during cooldown OR periodic vent
+          if (id(is_cooling_down) || id(vent_periodic_active)) {
+            id(vent_fan).turn_on();
+          } else {
+            id(vent_fan).turn_off();
+          }
+
+          // Track relay on-time (2 second increments)
+          if (id(heater_pid).action == climate::CLIMATE_ACTION_HEATING)      id(heater_on_seconds) += 2;
+          if (id(humidifier_relay).state) id(humidifier_on_seconds) += 2;
+          if (id(vent_fan).state)         id(fan_on_seconds) += 2;
+
+  # Display refresh
+  - interval: 500ms
+    then:
+      - lambda: |-
+          static int slow_counter = 0;
+          slow_counter++;
+          if (id(display_dirty)) {
+            id(display_dirty) = false;
+            id(my_display).update();
+          } else if (id(menu_mode) <= 3 && slow_counter >= 10) {
+            // Info pages: refresh every 5s for live sensor readings
+            slow_counter = 0;
+            id(my_display).update();
+          }
+          // Special refresh for Vent page countdown
+          else if (id(menu_mode) == 7 && slow_counter >= 2) { 
+             slow_counter = 0;
+             id(my_display).update();
+          }
+
+# ======================
+# TIME SYNC
+# ======================
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "Asia/Dubai"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 12
+        then:
+          - lambda: "id(is_cooling_down) = true;"
+          - delay: 30min
+          - lambda: "id(is_cooling_down) = false;"
