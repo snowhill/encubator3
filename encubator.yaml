@@ -10,6 +10,10 @@ esphome:
           id(max_temp_recorded) = 0.0;
           id(min_hum_recorded) = 99.0;
           id(max_hum_recorded) = 0.0;
+          // Sync Home Assistant Day number with the internal memory on boot
+          if (id(set_day).has_state()) {
+             id(set_day).publish_state(id(incubation_day));
+          }
 
 esp32:
   board: esp32dev
@@ -55,15 +59,21 @@ globals:
   - id: menu_mode
     type: int
     initial_value: '0'
-    # 0=Home, 1=Stats, 2=Ext, 3=Status, 4=SetTemp, 5=SetHum, 6=Safety, 7=Vent, 8=Info
+    # 0=Home, 1=Stats, 2=Ext, 3=Status, 4=SetTemp, 5=SetHum, 6=Safety, 7=Vent, 8=Day, 9=Info
 
   - id: total_menu_pages
     type: int
-    initial_value: '9'
+    initial_value: '10'
 
   - id: is_cooling_down
     type: bool
     initial_value: 'false'
+
+  # --- Incubation Day Counter ---
+  - id: incubation_day
+    type: int
+    initial_value: '1'
+    restore_value: yes 
 
   # --- Ventilation Globals ---
   - id: vent_periodic_active
@@ -208,6 +218,7 @@ display:
       auto PANEL_BORDER = Color(50, 55, 80);
       auto ACCENT     = Color(0, 180, 255);
       auto TEAL       = Color(0, 180, 170);
+      auto PURPLE     = Color(150, 0, 255);
 
       // ===== HELPER: Uptime String =====
       unsigned long uptime_sec = (millis() - id(boot_time)) / 1000;
@@ -320,7 +331,7 @@ display:
         it.filled_rectangle(171, 143, (int)(130 * hum_pct_val), 6, hum_color);
 
         it.filled_rectangle(8, 164, 304, 24, DARK_GREY);
-        it.printf(160, 176, id(font_small), AMBER, TextAlign::CENTER, "Target: %.1f\xc2\xb0""C  |  %.0f%% RH", tgt_temp, tgt_hum);
+        it.printf(160, 176, id(font_small), AMBER, TextAlign::CENTER, "Day %d  |  %.1f\xc2\xb0""C  |  %.0f%%", id(incubation_day), tgt_temp, tgt_hum);
 
         auto overall = (temp_ok && hum_ok) ? GREEN : ORANGE;
         auto overall_text = (temp_ok && hum_ok) ? "ALL OPTIMAL" : "ADJUSTING...";
@@ -545,7 +556,7 @@ display:
       }
 
       // =====================================================
-      // PAGE 7: VENTILATION SETTINGS (NEW)
+      // PAGE 7: VENTILATION SETTINGS
       // =====================================================
       else if (id(menu_mode) == 7) {
         it.filled_rectangle(0, 24, 320, 28, Color(10, 50, 80));
@@ -593,9 +604,46 @@ display:
       }
 
       // =====================================================
-      // PAGE 8: SYSTEM INFO (MOVED)
+      // PAGE 8: INCUBATION DAY
       // =====================================================
       else if (id(menu_mode) == 8) {
+        it.filled_rectangle(0, 24, 320, 198, Color(40, 5, 40)); // Purple BG
+        it.print(160, 50, id(font_title), WHITE, TextAlign::CENTER, "INCUBATION DAY");
+        it.filled_rectangle(60, 64, 200, 2, PURPLE);
+
+        if (id(edit_mode)) {
+          it.rectangle(45, 90, 230, 60, YELLOW);
+          if (blink) {
+            it.print(160, 80, id(font_tiny), YELLOW, TextAlign::CENTER, "--- EDITING ---");
+            it.print(30, 120, id(font_xl), YELLOW, TextAlign::CENTER, "<");
+            it.print(290, 120, id(font_xl), YELLOW, TextAlign::CENTER, ">");
+          }
+          it.printf(160, 120, id(font_xl), YELLOW, TextAlign::CENTER, "DAY %d", id(incubation_day));
+        } else {
+          it.printf(160, 120, id(font_xl), WHITE, TextAlign::CENTER, "DAY %d", id(incubation_day));
+        }
+
+        it.print(160, 150, id(font_small), GREY, TextAlign::CENTER, "Current Cycle");
+
+        // Status Logic
+        it.filled_rectangle(40, 190, 240, 22, DARK_GREY);
+        if (id(incubation_day) >= 19) {
+           it.printf(160, 201, id(font_tiny), RED, TextAlign::CENTER, "STATUS: LOCKDOWN (No Cooling)");
+        } else {
+           it.printf(160, 201, id(font_tiny), GREEN, TextAlign::CENTER, "STATUS: INCUBATING (Cooling ON)");
+        }
+        
+        if (id(edit_mode)) {
+           it.print(160, 216, id(font_tiny), YELLOW, TextAlign::CENTER, "Rotate to Change  |  Press to Save");
+        } else {
+           it.print(160, 216, id(font_tiny), AMBER, TextAlign::CENTER, "Press Knob to Edit");
+        }
+      }
+
+      // =====================================================
+      // PAGE 9: SYSTEM INFO (MOVED)
+      // =====================================================
+      else if (id(menu_mode) == 9) {
         it.filled_rectangle(0, 24, 320, 28, Color(25, 30, 55));
         it.print(160, 38, id(font_title), ACCENT, TextAlign::CENTER, "SYSTEM INFO");
 
@@ -649,7 +697,7 @@ display:
         row_y += 4;
 
         it.print(16, row_y, id(font_small), SOFT_WHITE, TextAlign::CENTER_LEFT, "Firmware:");
-        it.print(300, row_y, id(font_small), ACCENT, TextAlign::CENTER_RIGHT, "Pro V3.2");
+        it.print(300, row_y, id(font_small), ACCENT, TextAlign::CENTER_RIGHT, "Pro V3.4");
       }
 
 # ======================
@@ -699,6 +747,10 @@ sensor:
                  if (v > 120.0) v = 120.0;
                  id(vent_duration).publish_state(v);
                }
+            } else if (id(menu_mode) == 8) { // Day Page
+               id(incubation_day) += 1;
+               if (id(incubation_day) > 30) id(incubation_day) = 30;
+               id(set_day).publish_state(id(incubation_day)); // Sync to HA
             }
           }
           id(display_dirty) = true;
@@ -734,6 +786,10 @@ sensor:
                  if (v < 5.0) v = 5.0;
                  id(vent_duration).publish_state(v);
                }
+            } else if (id(menu_mode) == 8) { // Day Page
+               id(incubation_day) -= 1;
+               if (id(incubation_day) < 1) id(incubation_day) = 1;
+               id(set_day).publish_state(id(incubation_day)); // Sync to HA
             }
           }
           id(display_dirty) = true;
@@ -827,13 +883,17 @@ binary_sensor:
             } else {
               id(vent_edit_field) += 1;
               if (id(vent_edit_field) > 1) {
-                // Save values
                 id(vent_interval).make_call().set_value(id(vent_interval).state).perform();
                 id(vent_duration).make_call().set_value(id(vent_duration).state).perform();
                 id(vent_edit_field) = 0;
                 id(edit_mode) = false;
               }
             }
+          } else if (id(menu_mode) == 8) { // Day Page
+            if (id(edit_mode)) {
+               // When leaving Edit Mode, trigger display refresh
+            }
+            id(edit_mode) = !id(edit_mode);
           }
           id(display_dirty) = true;
 
@@ -901,7 +961,6 @@ number:
     optimistic: true
     restore_value: yes
 
-  # --- NEW: Ventilation Numbers ---
   - platform: template
     id: vent_interval
     name: "Vent Interval (Min)"
@@ -921,6 +980,23 @@ number:
     initial_value: 15
     optimistic: true
     restore_value: yes
+
+  # --- NEW: Incubation Day Entity for HA ---
+  - platform: template
+    id: set_day
+    name: "Incubation Day"
+    icon: "mdi:calendar-clock"
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 1
+    optimistic: true
+    restore_value: yes
+    set_action:
+      - lambda: |-
+          // Update internal logic when changed from HA
+          id(incubation_day) = x;
+          id(display_dirty) = true;
 
 # ======================
 # HEATER OUTPUT (Slow PWM for SSR)
@@ -974,7 +1050,6 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
-          // 1. Auto-return logic for menus
           if (id(menu_mode) >= 4) {
             id(display_page_timer) += 1;
             if (id(display_page_timer) > 60) {
@@ -987,24 +1062,20 @@ interval:
             id(display_page_timer) = 0;
           }
 
-          // 2. Periodic Vent Logic
           id(vent_timer_sec) += 1;
           
           if (id(vent_interval).state > 0 && !id(is_cooling_down)) {
              int interval_sec = (int)id(vent_interval).state * 60;
              int duration_sec = (int)id(vent_duration).state;
 
-             // Start
              if (id(vent_timer_sec) >= interval_sec && !id(vent_periodic_active)) {
                id(vent_periodic_active) = true;
              }
-             // Stop
              if (id(vent_periodic_active) && id(vent_timer_sec) >= (interval_sec + duration_sec)) {
                id(vent_periodic_active) = false;
-               id(vent_timer_sec) = 0; // Reset
+               id(vent_timer_sec) = 0; 
              }
           } else {
-             // If disabled or cooling down, hold timer at 0
              id(vent_periodic_active) = false;
              id(vent_timer_sec) = 0;
           }
@@ -1013,7 +1084,6 @@ interval:
   - interval: 2s
     then:
       - lambda: |-
-          // SAFETY: If temp sensor fails, disable PID
           if (isnan(id(temp_c).state)) {
             id(heater_pwm).set_level(0);
             auto off_call = id(heater_pid).make_call();
@@ -1022,7 +1092,6 @@ interval:
             return;
           }
 
-          // SAFETY: Emergency cutoff with 0.5°C hysteresis
           static bool emergency_cutoff = false;
           if (id(temp_c).state > id(max_temp).state) {
             emergency_cutoff = true;
@@ -1037,11 +1106,9 @@ interval:
             return;
           }
 
-          // PID TARGET: update setpoint based on normal or cooldown mode
           float target = id(set_temp).state;
           if (id(is_cooling_down)) target = id(cool_down_target).state;
 
-          // Only update PID if target changed or mode is off
           auto current_mode = id(heater_pid).mode;
           if (current_mode != climate::CLIMATE_MODE_HEAT ||
               std::abs(id(heater_pid).target_temperature - target) > 0.05f) {
@@ -1051,25 +1118,21 @@ interval:
             heat_call.perform();
           }
 
-          // SAFETY: If humidity sensor fails, stop humidifier
           if (isnan(id(hum_pct).state)) {
             id(humidifier_relay).turn_off();
           }
 
-          // HUMIDIFIER LOGIC (only when not cooling, and sensor valid)
           if (!id(is_cooling_down) && !isnan(id(hum_pct).state)) {
             if (id(hum_pct).state <= (id(set_hum).state - 3)) id(humidifier_relay).turn_on();
             else if (id(hum_pct).state >= id(set_hum).state)  id(humidifier_relay).turn_off();
           }
 
-          // FAN LOGIC: run during cooldown OR periodic vent
           if (id(is_cooling_down) || id(vent_periodic_active)) {
             id(vent_fan).turn_on();
           } else {
             id(vent_fan).turn_off();
           }
 
-          // Track relay on-time (2 second increments)
           if (id(heater_pid).action == climate::CLIMATE_ACTION_HEATING)      id(heater_on_seconds) += 2;
           if (id(humidifier_relay).state) id(humidifier_on_seconds) += 2;
           if (id(vent_fan).state)         id(fan_on_seconds) += 2;
@@ -1084,11 +1147,9 @@ interval:
             id(display_dirty) = false;
             id(my_display).update();
           } else if (id(menu_mode) <= 3 && slow_counter >= 10) {
-            // Info pages: refresh every 5s for live sensor readings
             slow_counter = 0;
             id(my_display).update();
           }
-          // Special refresh for Vent page countdown
           else if (id(menu_mode) == 7 && slow_counter >= 2) { 
              slow_counter = 0;
              id(my_display).update();
@@ -1104,8 +1165,20 @@ time:
     on_time:
       - seconds: 0
         minutes: 0
+        hours: 0
+        then:
+          - lambda: |-
+              id(incubation_day) += 1;
+              if (id(incubation_day) > 30) id(incubation_day) = 30;
+              id(set_day).publish_state(id(incubation_day)); // Sync HA at midnight
+
+      - seconds: 0
+        minutes: 0
         hours: 12
         then:
-          - lambda: "id(is_cooling_down) = true;"
+          - lambda: |-
+              if (id(incubation_day) < 19) {
+                 id(is_cooling_down) = true;
+              }
           - delay: 30min
           - lambda: "id(is_cooling_down) = false;"
